@@ -8,13 +8,13 @@ The agent never pushes a fix on its own. GitHub writes happen only after a revie
 
 1. Connects to GitHub with a personal access token and walks the repo tree.
 2. Keeps `.sql`, `.py`, and Spark (`.scala` plus Python files that import PySpark) files.
-3. Runs fast local heuristics for common anti-patterns (`SELECT *`, `collect()`, `iterrows()`, Python UDFs, cartesian joins, and similar).
+3. Parses SQL with [SQLGlot](https://github.com/tobymao/sqlglot) and Python/PySpark with Python's `ast` module. It looks for `SELECT *`, `collect()`, `iterrows()`, Python UDFs, cartesian joins, and similar shapes in the tree.
 4. Sends each candidate snippet to the OpenAI API for:
    - a plain-language explanation of why it is inefficient
    - production impact (driver OOM, full scan, shuffle, cost)
    - severity (`critical` / `high` / `medium` / `low` / `info`)
    - a proposed rewrite
-   - a false-positive check so noisy heuristics can be dropped
+   - a false-positive check so a parsed shape that is fine in context can be dropped
 5. Stores findings in a local SQLite queue.
 6. Serves a small review UI so a human can approve, edit, or reject each finding.
 7. After approval, creates a branch, commit, and pull request on the original repo. The PR body lists severity, reasoning, and the human-signed-off fix.
@@ -24,7 +24,7 @@ Local-only scans are supported for demos and CI (`--local` and `--skip-llm`).
 ## Architecture
 
 ```
-GitHub repo ──► scanner ──► heuristics ──► OpenAI reviewer ──► SQLite findings
+GitHub repo ──► scanner ──► SQLGlot / Python AST ──► OpenAI reviewer ──► SQLite findings
                                                                   │
                                                                   ▼
                                                          review UI (human)
@@ -36,7 +36,7 @@ GitHub repo ──► scanner ──► heuristics ──► OpenAI reviewer ─
 
 | Piece | Role |
 | --- | --- |
-| `heuristics.py` | Cheap, deterministic pattern scan so the model is not fed the whole repo |
+| `sql_scan.py` / `python_scan.py` | SQLGlot and Python AST passes so the model only sees real statements and calls |
 | `openai_reviewer.py` | Structured JSON review: reasoning, severity, rewrite, false-positive filter |
 | `store.py` | Durable queue (`pending` → `approved` / `rejected` → `applied`) |
 | `web/` | Reviewer UI |
@@ -71,6 +71,8 @@ Scan a GitHub repo (uses the default branch ref unless you pass another):
 agent-reviewer scan owner/repo --ref main
 ```
 
+The command prints as it goes: each file, the parser that read it, the line it flagged, then each OpenAI result (`kept high` or `dropped as a false positive`). `--quiet` leaves only the final table.
+
 Scan the bundled inefficient examples without GitHub or OpenAI:
 
 ```bash
@@ -99,13 +101,17 @@ agent-reviewer status
 
 The PR branch is named `agent-reviewer/optimizations-<timestamp>` and the description includes every approved finding so another reviewer can still treat it as a suggestion, not a merge-on-sight patch.
 
-## Heuristics covered
+## What the parsers look for
 
-**SQL:** `SELECT *`, leading-wildcard `LIKE`, functions on filtered columns, `NOT IN` subqueries, `SELECT DISTINCT` as a band-aid, `CROSS JOIN`, nested `IN (SELECT …)`, `ORDER BY` without `LIMIT`.
+SQLGlot walks the SQL tree. A match inside a comment or a function wrapped around a literal, such as `LOWER('OPEN')`, is not a finding. Python's AST does the same for calls, loops, and assignments. The code is never executed.
 
-**Python:** `DataFrame.iterrows()`, `apply()`, string `+=` in loops, nested `for` loops, `.read()` of whole files, row-by-row `.append()`, `time.sleep`.
+**SQL:** `SELECT *` in the select list, leading-wildcard `LIKE`, a function wrapped around a filtered column, `NOT IN (SELECT …)`, `SELECT DISTINCT`, `CROSS JOIN`, `IN (SELECT …)`, correlated subqueries (an outer column referenced inside), `ORDER BY` without `LIMIT`.
 
-**Spark / PySpark:** `.collect()`, `.toPandas()`, `.count()` inside loops, Python `udf` / `pandas_udf`, RDD `map` instead of the DataFrame API, `coalesce(1)`, `crossJoin` / `cartesian`, unkeyed `repartition(n)`, large `.take()`.
+**Python:** `iterrows()` / `itertuples()`, `apply()` only on a pandas object this file created, `+=` on a string inside a loop, a nested loop over the same collection, `read_text()` / `read_bytes()` / an unbounded `read()` on a file, `time.sleep`.
+
+**Spark / PySpark:** `.collect()`, `.toPandas()`, zero-argument `.count()` inside a loop on a DataFrame, Python `udf` / `pandas_udf`, RDD `map` / `flatMap` / `foreach`, `coalesce(1)`, `crossJoin` / `cartesian`, `repartition(n)` with no key, `.take(n)` for n of 1000 or more.
+
+SQL written as a string in Python is parsed with SQLGlot too. Scala files are scanned for SQL string literals only, because Python has no Scala parser.
 
 These are candidates, not verdicts. OpenAI is asked to drop false positives before a human ever sees the queue.
 
@@ -126,7 +132,9 @@ Treat every PR as a suggested optimization. Run tests and check query plans on p
 src/agent_reviewer/
   cli.py              # scan, serve, create-pr, status
   github_client.py    # repo tree, file fetch, git blobs, PRs
-  heuristics.py       # SQL / Python / Spark pattern library
+  heuristics.py       # sends each file to SQLGlot or Python's AST
+  sql_scan.py         # SQLGlot rules
+  python_scan.py      # ast rules for Python and PySpark
   openai_reviewer.py  # structured OpenAI review
   pipeline.py         # scan orchestration
   pr_creator.py       # apply approved snippets and open a PR

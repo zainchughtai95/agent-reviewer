@@ -1,4 +1,4 @@
-"""Inefficient SQL a reviewer should catch."""
+-- Inefficient SQL a reviewer should catch.
 
 SELECT *
 FROM orders o

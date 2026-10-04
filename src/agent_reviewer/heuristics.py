@@ -1,9 +1,24 @@
+"""Dispatch each file to SQLGlot or Python's AST.
+
+SQL files are parsed with SQLGlot. Python and PySpark files are parsed with
+the stdlib `ast` module. SQL string literals inside Python, and string literals
+inside Scala, are parsed again with SQLGlot. The parsers do not execute code.
+"""
+
 from __future__ import annotations
 
-import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_reviewer.models import Candidate, Language
+from agent_reviewer.python_scan import embedded_sql_strings, find_python_issues
+from agent_reviewer.sql_scan import (
+    SPARK_DIALECTS,
+    SQL_DIALECTS,
+    extract_scala_strings,
+    find_sql_issues,
+    looks_like_sql,
+)
 
 SKIP_DIR_PARTS = {
     ".git",
@@ -21,158 +36,13 @@ SQL_SUFFIXES = {".sql"}
 PYTHON_SUFFIXES = {".py"}
 SPARK_SUFFIXES = {".scala"}
 
-SQL_RULES = [
-    (
-        "sql.select_star",
-        r"\bSELECT\s+\*",
-        "SELECT *",
-        "Selecting every column increases I/O, network, and memory use.",
-    ),
-    (
-        "sql.leading_wildcard_like",
-        r"\bLIKE\s+'%",
-        "Leading-wildcard LIKE",
-        "LIKE '%value' typically cannot use a B-tree index.",
-    ),
-    (
-        "sql.function_on_column",
-        r"\bWHERE\s+\w+\([^)]+\)\s*=",
-        "Function on filtered column",
-        "Wrapping a column in a function often disables index use.",
-    ),
-    (
-        "sql.not_in_subquery",
-        r"\bNOT\s+IN\s*\(",
-        "NOT IN subquery",
-        "NOT IN is slow and NULLs can produce surprising empty results.",
-    ),
-    (
-        "sql.distinct_band_aid",
-        r"\bSELECT\s+DISTINCT\b",
-        "SELECT DISTINCT",
-        "DISTINCT often hides a bad join and adds a full sort/hash.",
-    ),
-    (
-        "sql.cross_join",
-        r"\bCROSS\s+JOIN\b",
-        "CROSS JOIN",
-        "Cartesian products explode row counts unless they are intentional.",
-    ),
-    (
-        "sql.correlated_subquery",
-        r"\bWHERE\s+\w+\s+IN\s*\(\s*SELECT\b",
-        "Correlated / nested IN subquery",
-        "Nested subqueries in filters often re-execute per outer row.",
-    ),
-    (
-        "sql.order_without_limit",
-        r"\bORDER\s+BY\b(?![^;]{0,200}\bLIMIT\b)",
-        "ORDER BY without LIMIT",
-        "Sorting a large result set without LIMIT is expensive.",
-    ),
-]
 
-PYTHON_RULES = [
-    (
-        "py.pandas_iterrows",
-        r"\.iterrows\s*\(",
-        "pandas iterrows()",
-        "Row-wise pandas iteration is much slower than vectorized ops.",
-    ),
-    (
-        "py.pandas_apply",
-        r"\.apply\s*\(",
-        "pandas apply()",
-        "apply() is often a hidden Python loop; prefer vectorized methods.",
-    ),
-    (
-        "py.concat_in_loop",
-        r"for\s+.+:\s*\n(?:.*\n){0,8}.*\+=\s*['\"]",
-        "String concatenation in a loop",
-        "Repeated += on strings copies the whole string each time.",
-    ),
-    (
-        "py.nested_for",
-        r"for\s+.+:\s*\n(?:[ \t]+.*\n)*[ \t]+for\s+.+:",
-        "Nested for-loops",
-        "Nested loops are often O(n^2); look for joins, maps, or vectorization.",
-    ),
-    (
-        "py.read_all",
-        r"\.read\(\)\s*$",
-        "Read entire file into memory",
-        "Loading whole files can blow memory; stream or chunk if possible.",
-    ),
-    (
-        "py.global_list_append_loop",
-        r"for\s+.+:\s*\n(?:.*\n){0,12}.*\.append\(",
-        "Row-by-row list building",
-        "Appending in a Python loop may be replaceable with a comprehension or bulk API.",
-    ),
-    (
-        "py.time_sleep",
-        r"time\.sleep\s*\(",
-        "time.sleep in application code",
-        "Sleep is a common stand-in for backoff/polling and stalls workers.",
-    ),
-]
-
-SPARK_RULES = [
-    (
-        "spark.collect",
-        r"\.collect\s*\(",
-        "DataFrame.collect()",
-        "collect() pulls the full dataset to the driver and can OOM.",
-    ),
-    (
-        "spark.to_pandas",
-        r"\.toPandas\s*\(",
-        "toPandas()",
-        "toPandas() materializes the whole DataFrame on the driver.",
-    ),
-    (
-        "spark.count_in_loop",
-        r"for\s+.+:\s*\n(?:.*\n){0,10}.*\.count\s*\(",
-        "count() inside a loop",
-        "Each count() is a Spark job; repeated counts are very expensive.",
-    ),
-    (
-        "spark.python_udf",
-        r"\b(?:udf|pandas_udf)\s*\(",
-        "Python UDF",
-        "Python UDFs break Catalyst optimization and add serialization cost.",
-    ),
-    (
-        "spark.rdd_map",
-        r"\.rdd\.(?:map|flatMap|foreach)\s*\(",
-        "RDD map instead of DataFrame API",
-        "RDDs skip Catalyst and Tungsten optimizations.",
-    ),
-    (
-        "spark.coalesce_one",
-        r"\.coalesce\s*\(\s*1\s*\)",
-        "coalesce(1)",
-        "Writing through a single partition serializes the whole job.",
-    ),
-    (
-        "spark.cartesian",
-        r"\.crossJoin\s*\(|\.cartesian\s*\(",
-        "Cartesian Spark join",
-        "crossJoin/cartesian can explode partitions and shuffle size.",
-    ),
-    (
-        "spark.repartition_no_key",
-        r"\.repartition\s*\(\s*\d+\s*\)",
-        "repartition by count only",
-        "Hash-repartitioning without a key can add a full shuffle.",
-    ),
-    (
-        "spark.take_all",
-        r"\.take\s*\(\s*\d{4,}\s*\)",
-        "Large take()",
-        "take() of thousands of rows still concentrates data on the driver.",
-    ),
-]
+@dataclass
+class FileScan:
+    path: str
+    engine: str
+    candidates: list[Candidate] = field(default_factory=list)
+    detail: str = ""
 
 
 def classify_path(path: str, content: str = "") -> Language | None:
@@ -209,60 +79,82 @@ def is_supported_path(path: str) -> bool:
     return suffix in SQL_SUFFIXES | PYTHON_SUFFIXES | SPARK_SUFFIXES
 
 
-def _line_span(text: str, start: int, end: int) -> tuple[int, int]:
-    start_line = text.count("\n", 0, start) + 1
-    end_line = text.count("\n", 0, end) + 1
-    return start_line, end_line
-
-
-def _context(text: str, start: int, end: int, radius: int = 4) -> tuple[str, int, int]:
-    lines = text.splitlines()
-    start_line, end_line = _line_span(text, start, end)
-    lo = max(0, start_line - 1 - radius)
-    hi = min(len(lines), end_line + radius)
-    snippet = "\n".join(lines[lo:hi])
-    return snippet, lo + 1, hi
-
-
 def scan_text(file_path: str, content: str) -> list[Candidate]:
+    return scan_source(file_path, content).candidates
+
+
+def scan_source(file_path: str, content: str) -> FileScan:
     language = classify_path(file_path, content)
     if language is None:
-        return []
+        return FileScan(file_path, "skipped")
 
-    if language is Language.SQL:
-        rules = SQL_RULES
-    elif language is Language.SPARK:
-        rules = SPARK_RULES + PYTHON_RULES
-    else:
-        rules = PYTHON_RULES
+    suffix = Path(file_path).suffix.lower()
+    if suffix in SQL_SUFFIXES:
+        candidates, detail = find_sql_issues(
+            content,
+            file_path=file_path,
+            file_text=content,
+            dialects=SQL_DIALECTS,
+        )
+        return FileScan(file_path, "SQLGlot", candidates, detail)
 
-    flags = re.IGNORECASE | re.MULTILINE
-    found: list[Candidate] = []
-    seen: set[tuple[str, int]] = set()
-
-    for rule_id, pattern, title, hint in rules:
-        try:
-            matches = list(re.finditer(pattern, content, flags))
-        except re.error:
-            continue
-        for match in matches[:8]:
-            snippet, start_line, end_line = _context(
-                content, match.start(), match.end()
-            )
-            key = (rule_id, start_line)
-            if key in seen:
+    if suffix in SPARK_SUFFIXES:
+        candidates: list[Candidate] = []
+        errors: list[str] = []
+        for line, text in extract_scala_strings(content):
+            if not looks_like_sql(text):
                 continue
-            seen.add(key)
-            found.append(
-                Candidate(
-                    file_path=file_path,
-                    language=language,
-                    rule_id=rule_id,
-                    title=title,
-                    start_line=start_line,
-                    end_line=end_line,
-                    snippet=snippet.strip("\n"),
-                    hint=hint,
-                )
+            found, detail = find_sql_issues(
+                text,
+                file_path=file_path,
+                file_text=content,
+                start_line=line,
+                dialects=SPARK_DIALECTS,
             )
-    return found
+            candidates.extend(found)
+            if detail:
+                errors.append(f"line {line}: {detail}")
+        detail = errors[0] if errors and not candidates else ""
+        return FileScan(file_path, "SQLGlot", _dedupe(candidates), detail)
+
+    candidates, detail = find_python_issues(file_path, content, language)
+    embedded, embedded_errors = _embedded_sql(file_path, content, language)
+    engine = "Python AST + SQLGlot" if embedded else "Python AST"
+    if detail and not candidates and not embedded:
+        return FileScan(file_path, engine, [], detail)
+    extra = f" Embedded SQL: {embedded_errors[0]}" if embedded_errors and not embedded else ""
+    return FileScan(file_path, engine, _dedupe(candidates + embedded), extra.strip())
+
+
+def _embedded_sql(
+    file_path: str, content: str, language: Language
+) -> tuple[list[Candidate], list[str]]:
+    dialects = SPARK_DIALECTS if language is Language.SPARK else SQL_DIALECTS
+    found: list[Candidate] = []
+    errors: list[str] = []
+    for line, text in embedded_sql_strings(content):
+        if not looks_like_sql(text):
+            continue
+        candidates, detail = find_sql_issues(
+            text,
+            file_path=file_path,
+            file_text=content,
+            start_line=line,
+            dialects=dialects,
+        )
+        found.extend(candidates)
+        if detail:
+            errors.append(detail)
+    return found, errors
+
+
+def _dedupe(candidates: list[Candidate]) -> list[Candidate]:
+    seen: set[tuple[str, int, str]] = set()
+    unique: list[Candidate] = []
+    for candidate in candidates:
+        key = (candidate.rule_id, candidate.start_line, candidate.file_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique

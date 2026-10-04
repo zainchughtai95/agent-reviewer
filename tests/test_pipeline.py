@@ -24,3 +24,22 @@ def test_local_scan_without_llm(tmp_path: Path) -> None:
     assert "orders.sql" in files
     assert "rollup.py" in files
     assert "jobs.py" in files
+
+
+def test_scan_prints_progress(tmp_path: Path) -> None:
+    examples = Path(__file__).resolve().parents[1] / "examples" / "inefficient"
+    messages: list[str] = []
+    settings = Settings(data_dir=tmp_path, openai_api_key="", github_token="")
+    run_scan(
+        repo="local/examples",
+        ref="local",
+        settings=settings,
+        local_path=examples,
+        skip_llm=True,
+        reporter=messages.append,
+    )
+    text = "\n".join(messages)
+    assert "SQLGlot" in text
+    assert "Python AST" in text
+    assert "orders.sql" in text
+    assert "OpenAI skipped" in text

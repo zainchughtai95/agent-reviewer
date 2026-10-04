@@ -28,8 +28,9 @@ def scan(
         None, help="Scan a local directory instead of GitHub"
     ),
     skip_llm: bool = typer.Option(
-        False, help="Skip OpenAI and keep heuristic candidates only"
+        False, help="Skip OpenAI and keep parser findings only"
     ),
+    quiet: bool = typer.Option(False, "--quiet", help="Print only the summary table"),
 ) -> None:
     """Find inefficient SQL, Python, and Spark code and store findings for human review."""
     settings = get_settings()
@@ -39,6 +40,7 @@ def scan(
         settings=settings,
         local_path=local,
         skip_llm=skip_llm,
+        reporter=None if quiet else console.print,
     )
     table = Table(title=f"Job {job.id} — {job.repo}@{job.ref}")
     table.add_column("Severity")
@@ -53,7 +55,7 @@ def scan(
     console.print(table)
     console.print(
         f"[green]Scanned {job.files_scanned} files, "
-        f"{job.candidates_found} heuristic hits, "
+        f"{job.candidates_found} parser findings, "
         f"{job.findings_count} findings ready for review.[/green]"
     )
     console.print("Next: agent-reviewer serve")
