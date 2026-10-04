@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ finding.title }}{% endblock %}
+{% block content %}
+<p><a class="muted" href="/">← Review queue</a></p>
+<h2>{{ finding.title }}</h2>
+<p>
+  <span class="pill {{ finding.severity.value }}">{{ finding.severity.value }}</span>
+  <span class="pill {{ finding.status.value }}">{{ finding.status.value }}</span>
+  <span class="muted">confidence {{ '%.0f'|format(finding.confidence * 100) }}%</span>
+</p>
+<p class="muted">{{ finding.repo }} · {{ finding.file_path }}:{{ finding.start_line }}–{{ finding.end_line }} · {{ finding.language.value }} · {{ finding.rule_id }}</p>
+
+<div class="stack">
+  <section class="panel">
+    <h3>Why this is inefficient</h3>
+    <p>{{ finding.reasoning }}</p>
+    <p><strong>Impact:</strong> {{ finding.impact }}</p>
+    <p><strong>Proposed fix:</strong> {{ finding.proposed_fix }}</p>
+  </section>
+
+  <div class="row">
+    <section>
+      <h3>Current snippet</h3>
+      <pre>{{ finding.snippet }}</pre>
+    </section>
+    <section>
+      <h3>Suggested rewrite</h3>
+      <pre>{{ finding.proposed_snippet }}</pre>
+    </section>
+  </div>
+
+  {% if finding.status.value == "pending" %}
+  <form method="post" action="/findings/{{ finding.id }}/review" class="stack">
+    <label class="muted">Edit the rewrite before approving, if needed</label>
+    <textarea name="proposed_snippet">{{ finding.proposed_snippet }}</textarea>
+    <label class="muted">Reviewer notes</label>
+    <textarea name="notes" style="min-height:80px;">{{ finding.reviewer_notes }}</textarea>
+    <div class="actions">
+      <button class="approve" name="action" value="approve" type="submit">Approve for PR</button>
+      <button class="reject" name="action" value="reject" type="submit">Reject</button>
+      <a class="button ghost" href="/">Cancel</a>
+    </div>
+  </form>
+  {% else %}
+    {% if finding.reviewer_notes %}<p><strong>Notes:</strong> {{ finding.reviewer_notes }}</p>{% endif %}
+  {% endif %}
+</div>
+{% endblock %}

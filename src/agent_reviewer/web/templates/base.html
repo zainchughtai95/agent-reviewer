@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Agent Reviewer{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2330;
+      --ink: #e7ecf3;
+      --muted: #93a1b5;
+      --line: #2b3a4d;
+      --accent: #5eead4;
+      --critical: #fb7185;
+      --high: #fb923c;
+      --medium: #fbbf24;
+      --low: #93c5fd;
+      --info: #a5b4fc;
+      --ok: #34d399;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header, main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    header h1 { margin: 0 0 8px; font-size: 1.4rem; }
+    .muted { color: var(--muted); }
+    .cards { display: flex; gap: 12px; margin: 16px 0 24px; flex-wrap: wrap; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+      min-width: 140px;
+    }
+    .card strong { display: block; font-size: 1.3rem; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 12px; overflow: hidden; }
+    th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .critical { background: #3f1d24; color: var(--critical); }
+    .high { background: #3b2714; color: var(--high); }
+    .medium { background: #3a2e10; color: var(--medium); }
+    .low { background: #15273d; color: var(--low); }
+    .info { background: #1e2444; color: var(--info); }
+    .pending { background: #1e293b; color: #cbd5e1; }
+    .approved { background: #052e1c; color: var(--ok); }
+    .rejected { background: #3f1d24; color: var(--critical); }
+    .applied { background: #0f2f3a; color: var(--accent); }
+    pre, textarea, code {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.85rem;
+    }
+    pre, textarea {
+      width: 100%;
+      background: #0b1016;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+      color: var(--ink);
+      overflow: auto;
+    }
+    textarea { min-height: 180px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    button, .button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .approve { background: var(--ok); color: #052e1c; }
+    .reject { background: var(--critical); color: #3f1d24; }
+    .ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+    .stack { display: grid; gap: 12px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    @media (max-width: 800px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><a href="/">Agent Reviewer</a></h1>
+    <p class="muted">Scan GitHub → LLM reasoning + severity → human sign-off → pull request</p>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

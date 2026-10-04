@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Review queue{% endblock %}
+{% block content %}
+<div class="cards">
+  <div class="card"><span class="muted">Pending</span><strong>{{ counts.pending }}</strong></div>
+  <div class="card"><span class="muted">Approved</span><strong>{{ counts.approved }}</strong></div>
+  <div class="card"><span class="muted">Rejected</span><strong>{{ counts.rejected }}</strong></div>
+  <div class="card"><span class="muted">Applied in a PR</span><strong>{{ counts.applied }}</strong></div>
+</div>
+
+{% if jobs %}
+  <p class="muted">
+    Jobs:
+    {% for job in jobs %}
+      <a href="/?job_id={{ job.id }}">{{ job.repo }} ({{ job.findings_count }})</a>
+      {% if not loop.last %} · {% endif %}
+    {% endfor %}
+    · <a href="/">all</a>
+  </p>
+  {% for job in jobs %}
+    {% if counts.approved and (not current_job or current_job == job.id) and job.source == "github" %}
+      <form method="post" action="/jobs/{{ job.id }}/create-pr" style="margin-bottom:16px;">
+        <button class="approve" type="submit">Create PR for approved findings in {{ job.repo }}</button>
+      </form>
+    {% endif %}
+  {% endfor %}
+{% endif %}
+
+<table>
+  <thead>
+    <tr>
+      <th>Severity</th>
+      <th>Status</th>
+      <th>File</th>
+      <th>Finding</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for finding in findings %}
+      <tr>
+        <td><span class="pill {{ finding.severity.value }}">{{ finding.severity.value }}</span></td>
+        <td><span class="pill {{ finding.status.value }}">{{ finding.status.value }}</span></td>
+        <td>
+          <a href="/findings/{{ finding.id }}">{{ finding.file_path }}:{{ finding.start_line }}</a>
+          <div class="muted">{{ finding.repo }} · {{ finding.language.value }}</div>
+        </td>
+        <td>
+          <strong>{{ finding.title }}</strong>
+          <div class="muted">{{ finding.reasoning[:180] }}{% if finding.reasoning|length > 180 %}…{% endif %}</div>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="4" class="muted">No findings yet. Run <code>agent-reviewer scan owner/repo</code>.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
